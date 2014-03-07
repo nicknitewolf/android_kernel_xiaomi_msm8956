@@ -511,19 +511,33 @@ void destroy_work_on_stack(struct work_struct *work)
 }
 EXPORT_SYMBOL_GPL(destroy_work_on_stack);
 
+void destroy_delayed_work_on_stack(struct delayed_work *work)
+{
+	destroy_timer_on_stack(&work->timer);
+	debug_object_free(&work->work, &work_debug_descr);
+}
+EXPORT_SYMBOL_GPL(destroy_delayed_work_on_stack);
+
 #else
 static inline void debug_work_activate(struct work_struct *work) { }
 static inline void debug_work_deactivate(struct work_struct *work) { }
 #endif
 
-/* allocate ID and assign it to @pool */
+/**
+ * worker_pool_assign_id - allocate ID and assing it to @pool
+ * @pool: the pool pointer of interest
+ *
+ * Returns 0 if ID in [0, WORK_OFFQ_POOL_NONE) is allocated and assigned
+ * successfully, -errno on failure.
+ */
 static int worker_pool_assign_id(struct worker_pool *pool)
 {
 	int ret;
 
 	lockdep_assert_held(&wq_pool_mutex);
 
-	ret = idr_alloc(&worker_pool_idr, pool, 0, 0, GFP_KERNEL);
+	ret = idr_alloc(&worker_pool_idr, pool, 0, WORK_OFFQ_POOL_NONE,
+			GFP_KERNEL);
 	if (ret >= 0) {
 		pool->id = ret;
 		return 0;
@@ -785,13 +799,6 @@ static bool too_many_workers(struct worker_pool *pool)
 	int nr_idle = pool->nr_idle + managing; /* manager is considered idle */
 	int nr_busy = pool->nr_workers - nr_idle;
 
-	/*
-	 * nr_idle and idle_list may disagree if idle rebinding is in
-	 * progress.  Never return %true if idle_list is empty.
-	 */
-	if (list_empty(&pool->idle_list))
-		return false;
-
 	return nr_idle > 2 && (nr_idle - 2) * MAX_IDLE_WORKERS_RATIO >= nr_busy;
 }
 
@@ -877,7 +884,7 @@ struct task_struct *wq_worker_sleeping(struct task_struct *task, int cpu)
 	pool = worker->pool;
 
 	/* this can only happen on the local cpu */
-	if (WARN_ON_ONCE(cpu != raw_smp_processor_id()))
+	if (WARN_ON_ONCE(cpu != raw_smp_processor_id() || pool->cpu != cpu))
 		return NULL;
 
 	/*
@@ -2040,8 +2047,7 @@ restart:
 		if (!need_to_create_worker(pool))
 			break;
 
-		__set_current_state(TASK_INTERRUPTIBLE);
-		schedule_timeout(CREATE_COOLDOWN);
+		schedule_timeout_interruptible(CREATE_COOLDOWN);
 
 		if (!need_to_create_worker(pool))
 			break;
@@ -3159,36 +3165,6 @@ int schedule_on_each_cpu(work_func_t func)
 }
 
 /**
- * flush_scheduled_work - ensure that any scheduled work has run to completion.
- *
- * Forces execution of the kernel-global workqueue and blocks until its
- * completion.
- *
- * Think twice before calling this function!  It's very easy to get into
- * trouble if you don't take great care.  Either of the following situations
- * will lead to deadlock:
- *
- *	One of the work items currently on the workqueue needs to acquire
- *	a lock held by your code or its caller.
- *
- *	Your code is running in the context of a work routine.
- *
- * They will be detected by lockdep when they occur, but the first might not
- * occur very often.  It depends on what work items are on the workqueue and
- * what locks they need, which you have no control over.
- *
- * In most situations flushing the entire workqueue is overkill; you merely
- * need to know that a particular work item isn't queued and isn't running.
- * In such cases you should use cancel_delayed_work_sync() or
- * cancel_work_sync() instead.
- */
-void flush_scheduled_work(void)
-{
-	flush_workqueue(system_wq);
-}
-EXPORT_SYMBOL(flush_scheduled_work);
-
-/**
  * execute_in_process_context - reliably execute the routine with user context
  * @fn:		the function to execute
  * @ew:		guaranteed storage for the execute work structure (must
@@ -3673,7 +3649,7 @@ static void put_unbound_pool(struct worker_pool *pool)
 		return;
 
 	/* sanity checks */
-	if (WARN_ON(!(pool->flags & POOL_DISASSOCIATED)) ||
+	if (WARN_ON(!(pool->cpu < 0)) ||
 	    WARN_ON(!list_empty(&pool->worklist)))
 		return;
 
@@ -5124,10 +5100,6 @@ static int __init init_workqueues(void)
 {
 	int std_nice[NR_STD_WORKER_POOLS] = { 0, HIGHPRI_NICE_LEVEL };
 	int i, cpu;
-
-	/* make sure we have enough bits for OFFQ pool ID */
-	BUILD_BUG_ON((1LU << (BITS_PER_LONG - WORK_OFFQ_POOL_SHIFT)) <
-		     WORK_CPU_END * NR_STD_WORKER_POOLS);
 
 	WARN_ON(__alignof__(struct pool_workqueue) < __alignof__(long long));
 
