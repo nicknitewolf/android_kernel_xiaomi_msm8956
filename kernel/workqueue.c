@@ -1565,6 +1565,47 @@ bool mod_delayed_work_on(int cpu, struct workqueue_struct *wq,
 EXPORT_SYMBOL_GPL(mod_delayed_work_on);
 
 /**
+ * mod_fwd_delayed_work_on - like mod_delayed_work(), but only increase delay
+ * @cpu: CPU number to execute work on
+ * @wq: workqueue to use
+ * @dwork: work to queue
+ * @delay: number of jiffies to wait before queueing
+ *
+ * If @dwork is idle, equivalent to queue_delayed_work_on(); otherwise,
+ * compare the old expiration time with @delay and set @dwork's timer
+ * so that it expires after the later time.
+ *
+ * Return: %false if @dwork was idle and queued, %true if @dwork was
+ * pending and its timer was modified.
+ *
+ * This function is safe to call from any context including IRQ handler.
+ * See try_to_grab_pending() for details.
+ */
+bool mod_fwd_delayed_work_on(int cpu, struct workqueue_struct *wq,
+			     struct delayed_work *dwork, unsigned long delay)
+{
+	unsigned long flags;
+	int ret;
+
+	do {
+		ret = try_to_grab_pending(&dwork->work, true, &flags);
+	} while (unlikely(ret == -EAGAIN));
+
+	if (unlikely(ret == 1 &&
+		     time_after(dwork->timer.expires, jiffies + delay)))
+		delay = dwork->timer.expires - jiffies;
+
+	if (likely(ret >= 0)) {
+		__queue_delayed_work(cpu, wq, dwork, delay);
+		local_irq_restore(flags);
+	}
+
+	/* -ENOENT from try_to_grab_pending() becomes %true */
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mod_fwd_delayed_work_on);
+
+/**
  * worker_enter_idle - enter idle state
  * @worker: worker which is entering idle state
  *

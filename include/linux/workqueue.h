@@ -465,6 +465,8 @@ extern bool queue_delayed_work_on(int cpu, struct workqueue_struct *wq,
 			struct delayed_work *work, unsigned long delay);
 extern bool mod_delayed_work_on(int cpu, struct workqueue_struct *wq,
 			struct delayed_work *dwork, unsigned long delay);
+extern bool mod_fwd_delayed_work_on(int cpu, struct workqueue_struct *wq,
+			struct delayed_work *dwork, unsigned long delay);
 
 extern void flush_workqueue(struct workqueue_struct *wq);
 extern void drain_workqueue(struct workqueue_struct *wq);
@@ -533,6 +535,21 @@ static inline bool mod_delayed_work(struct workqueue_struct *wq,
 				    unsigned long delay)
 {
 	return mod_delayed_work_on(WORK_CPU_UNBOUND, wq, dwork, delay);
+}
+
+/**
+ * mod_fwd_delayed_work - queue a delayed work or increase delay
+ * @wq: workqueue to use
+ * @dwork: work to queue
+ * @delay: number of jiffies to wait before queueing
+ *
+ * mod_fwd_delayed_work_on() on local CPU.
+ */
+static inline bool mod_fwd_delayed_work(struct workqueue_struct *wq,
+					struct delayed_work *dwork,
+					unsigned long delay)
+{
+	return mod_fwd_delayed_work_on(WORK_CPU_UNBOUND, wq, dwork, delay);
 }
 
 /**
